@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pose Gesture Demo - Strong Glow</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #000;
+        }
+        #input_video {
+            display: none;
+        }
+        #output_canvas {
+            width: 100vw;
+            height: 100vh;
+            object-fit: cover; /* 画面一杯に表示 */
+            transform: scaleX(-1); /* 鏡合わせにする */
+        }
+        .ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            background: rgba(0,0,0,0.8); /* 少し濃く */
+            padding: 15px;
+            border-radius: 10px;
+            font-family: sans-serif;
+            pointer-events: none;
+            z-index: 10;
+            border: 2px solid rgba(255,255,255,0.3);
+        }
+        .ui-layer div {
+            margin-bottom: 5px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="ui-layer">
+        <div style="font-size: 1.2em; font-weight: bold; margin-bottom: 8px;">Pose Gesture Sensor</div>
+        <div style="font-size: 0.9em; line-height: 1.6;">
+            カメラに上半身を映してください。<br>
+            ・<span style="color: #00FF00; font-weight: bold;">●</span> 鼻：緑の点 (常時)<br>
+            ・<span style="color: #FFFF00; font-weight: bold;">●</span> 両手を近づける：黄色 (優先)<br>
+            ・<span style="color: #FF0000; font-weight: bold;">●</span> 左手を鼻より上へ：赤<br>
+            ・<span style="color: #3333FF; font-weight: bold;">●</span> 右手を鼻より上へ：青
+        </div>
+    </div>
+
+    <video id="input_video"></video>
+    <canvas id="output_canvas"></canvas>
+
+    <script type="module">
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+
+        /**
+         * 2点間の距離を計算
+         */
+        function getDistance(p1, p2) {
+            return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+        }
+
+        /**
+         * 指定位置にぼんやりした光を描画
+         */
+        function drawGlow(ctx, x, y, radius, color) {
+            ctx.save();
+            // 光をさらに強調するために、少しだけグローバルブレンドモードを変更
+            ctx.globalCompositeOperation = 'screen'; 
+            const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius);
+            gradient.addColorStop(0, color);
+            gradient.addColorStop(0.6, color.replace(/, [\d.]+\)$/, ', 0.6)')); // 中間層を少し薄く
+            gradient.addColorStop(1, 'transparent');
+            ctx.fillStyle = gradient;
+            ctx.beginPath();
+            ctx.arc(x, y, radius, 0, 2 * Math.PI);
+            ctx.fill();
+            ctx.restore();
+        }
+
+        /**
+         * 手首、小指、人差指の平均位置から、手のひらの近似位置を計算
+         */
+        function getPalmCenter(wrist, pinky, index) {
+            return {
+                x: (wrist.x + pinky.x + index.x) / 3,
+                y: (wrist.y + pinky.y + index.y) / 3
+            };
+        }
+
+        function onResults(results) {
+            // Canvasサイズをウィンドウに合わせる
+            if (canvasElement.width !== videoElement.videoWidth) {
+                canvasElement.width = videoElement.videoWidth;
+                canvasElement.height = videoElement.videoHeight;
+            }
+
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            // カメラ映像を描画
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.poseLandmarks) {
+                const landmarks = results.poseLandmarks;
+                const cw = canvasElement.width;
+                const ch = canvasElement.height;
+
+                // 1. ランドマークとコネクションの描画 (網目)
+                // 視認性向上のため、線を少し太く、点を大きく
+                drawConnectors(canvasCtx, landmarks, POSE_CONNECTIONS, {color: 'rgba(255, 255, 255, 0.6)', lineWidth: 3});
+                drawLandmarks(canvasCtx, landmarks, {color: 'rgba(255, 255, 255, 0.8)', lineWidth: 1, radius: 4});
+
+                // 2. 鼻の位置 (Landmark 0) に緑の丸を常時表示
+                const nose = landmarks[0];
+                canvasCtx.fillStyle = '#00FF00';
+                canvasCtx.beginPath();
+                canvasCtx.arc(nose.x * cw, nose.y * ch, 10, 0, 2 * Math.PI);
+                canvasCtx.fill();
+
+                
+                const lw = landmarks[15];
+                canvasCtx.fillStyle = '#FF0000';
+                canvasCtx.beginPath();
+                canvasCtx.arc(lw.x * cw, lw.y * ch, 10, 0, 2 * Math.PI);
+                canvasCtx.fill();
+
+                const rw = landmarks[16]; 
+                canvasCtx.fillStyle = '#0000FF';
+                canvasCtx.beginPath();
+                canvasCtx.arc(rw.x * cw, rw.y * ch, 10, 0, 2 * Math.PI);
+                canvasCtx.fill();
+
+
+                // 3. ジェスチャー判定とエフェクト
+
+                // 必要なランドマークの取得
+                const leftWrist = landmarks[15];
+                const rightWrist = landmarks[16];
+                const leftPinky = landmarks[17];
+                const rightPinky = landmarks[18];
+                const leftIndex = landmarks[19];
+                const rightIndex = landmarks[20];
+                const leftShoulder = landmarks[11];
+                const rightShoulder = landmarks[12];
+
+                // 手のひら位置の計算
+                const leftPalm = getPalmCenter(leftWrist, leftPinky, leftIndex);
+                const rightPalm = getPalmCenter(rightWrist, rightPinky, rightIndex);
+
+                // 顔のサイズ基準（肩幅）
+                const shoulderWidth = getDistance(leftShoulder, rightShoulder);
+                
+                // --- 判定ロジック ---
+                
+                // A. 両手を近づける判定 (基準：肩幅の38%以下、少し判定を広く)
+                const handsDist = getDistance(leftWrist, rightWrist);
+                const isHandsClose = handsDist < shoulderWidth * 0.5;
+
+                // B. 左手を鼻より上に上げる判定
+                const isLeftUp = leftWrist.y < nose.y;
+
+                // C. 右手を鼻より上に上げる判定
+                const isRightUp = rightWrist.y < nose.y;
+
+                // --- 視覚効果の描画 (強い色合い) ---
+                // 不透明度を 0.95 に引き上げ
+                const glowRadius = 160; 
+
+                // 黄色（接近）を最優先にする
+                if (isHandsClose) {
+                    // 両方の手のひらに強い黄色い光
+                    drawGlow(canvasCtx, leftPalm.x * cw, leftPalm.y * ch, glowRadius, 'rgba(255, 255, 0, 1)');
+                    drawGlow(canvasCtx, rightPalm.x * cw, rightPalm.y * ch, glowRadius, 'rgba(255, 255, 0, 1)');
+                } else {
+                    // 接近していない場合のみ、上下判定を行う
+
+                    if (isLeftUp) {
+                        // 左手に強い赤い光
+                        drawGlow(canvasCtx, leftPalm.x * cw, leftPalm.y * ch, glowRadius, 'rgba(255, 0, 0, 1)');
+                    }
+
+                    if (isRightUp) {
+                        // 右手に強い青い光
+                        drawGlow(canvasCtx, rightPalm.x * cw, rightPalm.y * ch, glowRadius, 'rgba(0, 0, 255, 1)');
+                    }
+                }
+            }
+            canvasCtx.restore();
+        }
+
+        // Pose の設定
+        const pose = new Pose({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+        }});
+
+        pose.setOptions({
+            modelComplexity: 1, // 上半身なら1で十分高速
+            smoothLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+        pose.onResults(onResults);
+
+        // カメラの設定
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await pose.send({image: videoElement});
+            },
+            width: 1280,
+            height: 720
+        });
+        camera.start();
+    </script>
+</body>
+</html>
