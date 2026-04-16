@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pose Gesture Demo - Advanced Combo</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #000;
+        }
+        #input_video {
+            display: none;
+        }
+        #output_canvas {
+            width: 100vw;
+            height: 100vh;
+            object-fit: cover;
+            transform: scaleX(-1);
+        }
+        .ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            background: rgba(0,0,0,0.85);
+            padding: 15px;
+            border-radius: 12px;
+            font-family: sans-serif;
+            pointer-events: none;
+            z-index: 10;
+            border: 2px solid rgba(255,255,255,0.4);
+        }
+        .color-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 4px;
+            font-size: 0.85em;
+        }
+        .color-box {
+            width: 14px;
+            height: 14px;
+            margin-right: 8px;
+            border-radius: 3px;
+            border: 1px solid white;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="ui-layer">
+        <div style="font-size: 1.1em; font-weight: bold; margin-bottom: 10px;">Pose Sensor</div>
+        
+        <div class="color-item"><span class="color-box" style="background: #FF0000;"></span>左手上：赤 / <span class="color-box" style="background: #0000FF; margin-left:5px;"></span>右手上：青</div>
+        <div class="color-item"><span class="color-box" style="background: #FFFF00;"></span>両手接近のみ：黄色</div>
+        <div class="color-item"><span class="color-box" style="background: #00FF00;"></span>右手左肩交差のみ：緑</div>
+        <div class="color-item"><span class="color-box" style="background: #ffa500;"></span>右手左肩交差 + 両手接近：橙色</b></div>
+        <div class="color-item"><span class="color-box" style="background: #FF00FF;"></span>左手右肩交差のみ：桃色</div>
+        <div class="color-item"><span class="color-box" style="background: #00ffff;"></span>左手右肩交差 + 両手接近：水色</b></div>
+    </div>
+
+    <video id="input_video"></video>
+    <canvas id="output_canvas"></canvas>
+
+    <script type="module">
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+
+        function getDistance(p1, p2) {
+            return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+        }
+
+        function drawGlow(ctx, x, y, radius, color) {
+            ctx.save();
+            ctx.globalCompositeOperation = 'screen'; 
+            const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius);
+            gradient.addColorStop(0, color);
+            gradient.addColorStop(0.5, color.replace(/, [\d.]+\)$/, ', 0.8)'));
+            gradient.addColorStop(1, 'transparent');
+            ctx.fillStyle = gradient;
+            ctx.beginPath();
+            ctx.arc(x, y, radius, 0, 2 * Math.PI);
+            ctx.fill();
+            ctx.restore();
+        }
+
+        function getPalmCenter(wrist, pinky, index) {
+            return {
+                x: (wrist.x + pinky.x + index.x) / 3,
+                y: (wrist.y + pinky.y + index.y) / 3
+            };
+        }
+
+        function onResults(results) {
+            if (canvasElement.width !== videoElement.videoWidth) {
+                canvasElement.width = videoElement.videoWidth;
+                canvasElement.height = videoElement.videoHeight;
+            }
+
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.poseLandmarks) {
+                const landmarks = results.poseLandmarks;
+                const cw = canvasElement.width;
+                const ch = canvasElement.height;
+
+                // 1. ランドマーク描画
+                drawConnectors(canvasCtx, landmarks, POSE_CONNECTIONS, {color: 'rgba(0, 210, 255, 0.7)', lineWidth: 5});
+                drawLandmarks(canvasCtx, landmarks, {color: '#FFFFFF', fillColor: '#00d2ff', lineWidth: 2, radius: 5});
+
+                // 2. 鼻の緑丸
+                const nose = landmarks[0];
+                canvasCtx.fillStyle = '#00FF00';
+                canvasCtx.beginPath();
+                canvasCtx.arc(nose.x * cw, nose.y * ch, 12, 0, 2 * Math.PI);
+                canvasCtx.fill();
+
+                // 座標と判定
+                const lWrist = landmarks[15];
+                const rWrist = landmarks[16];
+                const lShoulder = landmarks[11];
+                const rShoulder = landmarks[12];
+                const lPalm = getPalmCenter(landmarks[15], landmarks[17], landmarks[19]);
+                const rPalm = getPalmCenter(landmarks[16], landmarks[18], landmarks[20]);
+
+                const shoulderWidth = getDistance(lShoulder, rShoulder);
+                const handsDist = getDistance(lWrist, rWrist);
+                
+                // 判定フラグ
+                const isLeftCross = lWrist.x < rShoulder.x;
+                const isRightCross = rWrist.x > lShoulder.x;
+                const isHandsClose = handsDist < shoulderWidth * 0.45;
+                const isLeftUp = lWrist.y < nose.y;
+                const isRightUp = rWrist.y < nose.y;
+
+                const glowR = 190;
+
+                // --- 描画ロジック (優先順位を考慮) ---
+
+                // 左手のエフェクト
+                if (isLeftCross && isHandsClose) {
+                    drawGlow(canvasCtx, lPalm.x * cw, lPalm.y * ch, glowR, 'rgba(0, 255, 255, 1)'); // 水色
+                } else if (isLeftCross) {
+                    drawGlow(canvasCtx, lPalm.x * cw, lPalm.y * ch, glowR, 'rgba(255, 0, 255, 1)'); // 桃色
+                } else if (isHandsClose && !isRightCross) {
+                    drawGlow(canvasCtx, lPalm.x * cw, lPalm.y * ch, glowR, 'rgba(255, 255, 0, 1)'); // 黄色
+                } else if (isLeftUp) {
+                    drawGlow(canvasCtx, lPalm.x * cw, lPalm.y * ch, glowR, 'rgba(255, 0, 0, 1)');   // 赤
+                }
+
+                // 右手のエフェクト
+                if (isRightCross && isHandsClose) {
+                    drawGlow(canvasCtx, rPalm.x * cw, rPalm.y * ch, glowR, 'rgba(255, 140, 0, 1)'); // 橙色
+                } else if (isRightCross) {
+                    drawGlow(canvasCtx, rPalm.x * cw, rPalm.y * ch, glowR, 'rgba(0, 255, 0, 1)');   // 緑色
+                } else if (isHandsClose && !isLeftCross) {
+                    drawGlow(canvasCtx, rPalm.x * cw, rPalm.y * ch, glowR, 'rgba(255, 255, 0, 1)'); // 黄色
+                } else if (isRightUp) {
+                    drawGlow(canvasCtx, rPalm.x * cw, rPalm.y * ch, glowR, 'rgba(0, 0, 255, 1)');   // 青
+                }
+            }
+            canvasCtx.restore();
+        }
+
+        const pose = new Pose({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`});
+        pose.setOptions({
+            modelComplexity: 1,
+            smoothLandmarks: true,
+            minDetectionConfidence: 0.6,
+            minTrackingConfidence: 0.6
+        });
+        pose.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await pose.send({image: videoElement});
+            },
+            width: 1280,
+            height: 720
+        });
+        camera.start();
+    </script>
+</body>
+</html>
